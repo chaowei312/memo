@@ -111,16 +111,21 @@ hidden_states = hidden_states + input_injection  # z_H + z_L
 - Update: $z_H^{t+1} \rightarrow m^{t+1}$ (updated state gates writing to memory)
 
 1. **Memory-to-State** (retrieve from current memory to update short-term state):
+
 $$\Delta z = \text{Attention}(\hat{h}, \hat{m}^t, \hat{m}^t)$$
+
 $$z_H^{t+1} = z_H^t + \Delta z + \text{FFN}(\text{LN}(z_H^t + \Delta z))$$
 
 2. **State-to-Memory** (updated state gates what to write to memory):
+
 $$\hat{h}^+ = \text{LN}(z_H^{t+1} + z_L^{T-1})$$
+
 $$\Delta m = \text{Attention}(\hat{m}^t, \hat{h}^+, \hat{h}^+)$$
+
 $$m^{t+1} = m^t + \Delta m + \text{FFN}(\text{LN}(m^t + \Delta m))$$
 
-
 **Final Update Rules**:
+
 $$z_H^i, m^i = \begin{cases} 
 \text{BiCrossAttn}(z_H^{i-1}, m^{i-1}, z_L^{i-1}; \theta_H) & \text{if } i \equiv 0 \pmod{T} \\
 z_H^{i-1}, m^{i-1} & \text{otherwise}
@@ -153,19 +158,25 @@ where $\text{CLS}_i^t$ serves dual purposes: (1) current state summary for selec
 - $\hat{h}^{+} = \text{LN}(z_H^{t+1} + z_L^{T-1})$: Updated state after retrieval
 
 **Top-k Cell Selection**:
+
 $$\mathcal{A}^t = \text{TopK}\left(\{s_i^t\}_{i=1}^N, k\right)$$
 
 where the selection score can be computed via:
+
 $$s_i^t = \frac{1}{R} \sum_{r=1}^{R} (\text{CLS}_i^t)^\top W_r \hat{h}$$
+
 with $R$ relevance projections to capture different matching patterns.
 
 **Specialization Objective** (maximize selection variance across cells):
+
 $$\mathcal{L}_{\text{diverse}} = -\text{Var}\left(\{p_i\}_{i=1}^N\right) = -\frac{1}{N}\sum_{i=1}^N (p_i - \bar{p})^2$$
 
 where $p_i = \frac{1}{T_{\text{total}}}\sum_{t} \mathbb{1}[i \in \mathcal{A}^t]$ is the selection frequency for cell $i$, and $\bar{p} = \frac{1}{N}\sum_i p_i$.
 
 Maximizing variance encourages distinct specialization goals for each cell, preventing mode collapse where all cells become identical. Alternatively, following MoE's approach, we could enforce one persistently active cell alongside load-balanced selection of others:
+
 $$\mathcal{L}_{\text{balance}} = \lambda \cdot \text{CV}^2(\{f_i\}_{i=2}^N)$$
+
 where CV is the coefficient of variation for cells 2 through N (with cell 1 always selected), encouraging uniform usage among the conditionally activated cells. One major concern is that this prevents discrete concept representation by individual cells, which are supposed to memorize and model distinct event states. Future work could explore natural memory pruning through usage-based decay, allowing unused cells to be dropped while preserving frequently accessed ones. However, we need to verify the exact behavior of memory cells.
 
 **Parallelized H-Module Processing**
@@ -182,14 +193,19 @@ where $\boldsymbol{\alpha} = \text{Softmax}(\{s_i^t\}_{i \in \mathcal{A}^t})$.
 > This could serve as a self-supervision target for the highest-scoring cell $m_j$ (where $j = \arg\max_{i \in \mathcal{A}^t} s_i^t$), i.e., $\mathcal{L}_{\text{self-sup}} = \|\Delta z - \text{Attention}(\hat{h}, \hat{m}_j, \hat{m}_j)\|^2$
 
 2. **State Update** (incorporate retrieved information):
+
 $$z_H^{t+1} = z_H^t + \Delta z + \text{FFN}(\text{LN}(z_H^t + \Delta z))$$
 
 3. **State-to-Memory** (updated state gates what to write to next memory state):
+
 $$\hat{h}^{+} = \text{LN}(z_H^{t+1} + z_L^{T-1})$$
+
 $$\Delta m_i = \text{Attention}(\hat{m}_i, \hat{h}^{+}, \hat{h}^{+})$$
+
 $$m_i^{t+1} = m_i^t + \Delta m_i + \text{FFN}(\text{LN}(m_i^t + \Delta m_i)), \quad \forall i \in \mathcal{A}^t$$
 
 **Final Update Rules**:
+
 $$z_H^i, \mathcal{M}^i = \begin{cases} 
 \text{MultiModalAttn}(\mathcal{M}^{i-1}, z_H^{i-1}, z_L^{i-1}, k; \theta_H) & \text{if } i \equiv 0 \pmod{T} \\
 z_H^{i-1}, \mathcal{M}^{i-1} & \text{otherwise}
