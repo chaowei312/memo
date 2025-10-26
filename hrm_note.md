@@ -307,6 +307,8 @@ Key differences from standard Q-learning:
 
 ## Critical Analysis
 
+![HRM Architecture](resources/hrm.png)
+
 ### Strengths
 1. **Parameter Efficiency**: 27M parameters outperform models 100× larger
 2. **Sample Efficiency**: Learns from only 1000 examples
