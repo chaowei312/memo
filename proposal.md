@@ -8,15 +8,19 @@
 
 > **Key Insight**: $\text{Performance} \propto \text{Depth}$ with diminishing returns from width scaling. We prefer adaptive iterative refinement over parameter expansion. By applying the Implicit Function Theorem assuming a fixed point from convergent features, we can use a one-step gradient approximation for optimization. 
 
-A later variant from *Less is More: Recursive Reasoning with Tiny Networks* computes a full-step gradient, resulting in significant improvement. 
+A later variant from *Less is More: Recursive Reasoning with Tiny Networks* [1] computes a full-step gradient, resulting in significant improvement. 
+
+![Benchmark](resources/benchmark.png)
+
+Also mentioned in paper [1] that smaller model generalize better "adding layers decreased generalization due to overfitting." 
 
 **Remark**: 
 - **Negative View:** More depth does not necessarily improve results even with *Hierarchical convergence*, as suggested by a recent reproduction of results—even compared to a typical recurrent transformer. We can practically consider the full-step gradient based on the task.
 - **Positive View:** There are multiple ways for solving a sudoku, or multiple trajectories of reasoning for the same conclusion. A full-step gradient can be excessive, whereas we could consider RL objectives with one-step gradient approximation.
 
-### Core Concept
+### HRM Core Concept
 
-This study proposes a model where the L-module governs game play, with its behavior shaped and validated by additive constraints from the rules at each step. The H-module provides high-level guidance by introducing its own set of additive constraints.
+The Hierarchical Reasoning Model (HRM) [2] proposes a model where the L-module governs game play, with its behavior shaped and validated by additive constraints from the rules at each step. The H-module provides high-level guidance by introducing its own set of additive constraints.
 
 - **L-Module (Low-level/Fast)**: The operator that mimics human low-level reasoning by processing local information within a single temporal cycle (e.g., a single turn in a game). It is constrained by explicit rules and local context.
 - **H-Module (High-level/Slow)**: The strategic, long-term memory component. It operates across multiple temporal cycles, integrating past experiences to provide high-level guidance or context to the L-module.
@@ -99,7 +103,7 @@ The human brain is essentially a sparse multimodal composition for aggregating i
 1. **Discrete modeling:** We can interpret "long-term" memory as a collection of distinct dynamic entities—each memory cell's features can be iteratively refined using the H-module, with [CLS] tokens representing each cell's current state and identity.
 2. **Self-multimodality:** A modal entity can be built by composing different concepts, or as a mixture of modalities. We propose a sparse activation mechanism over multiple specialized memory cells.
 
-In the following section, we discuss the memory update rules without specifying the refined roles of the H and L-modules. The L-module, for example, could be a decoder-only transformer.
+In the following section, we discuss the memory update rules without specifying the refined roles of the H and L-modules. 
 
 ### 1. Basic architectures
 
@@ -131,7 +135,7 @@ where $R$ is a hyperparameter for the number of relevance projections used to ca
 
 **Cell Specialization via Load Balancing**
 
-To encourage specialization and prevent computational imbalance where only a few cells are consistently selected, we adopt the load balancing auxiliary loss from Mixture-of-Experts (MoE) literature. This ensures that all memory cells participate in learning and contribute to the overall representation. The objective is defined as:
+To encourage specialization and prevent computational imbalance where only a few cells are consistently selected, we adopt the load balancing auxiliary loss from Mixture-of-Experts (MoE) literature [3]. This ensures that all memory cells participate in learning and contribute to the overall representation. The objective is defined as:
 
 $$\mathcal{L}_{\text{balance}} = \lambda \cdot \sum_{i=1}^N f_i \cdot P_i$$
 
@@ -186,3 +190,13 @@ z_H^{i-1}, \mathcal{M}^{i-1} & \text{otherwise}
 ### 2. Reinforcement Learning Objectives
 
 $\pi_\theta(\mathcal{A}|\hat{h}, \{\text{CLS}_i^t\}_{i=1}^N)$
+
+---
+
+## References
+
+[1] Jolicoeur-Martineau, A. (2025). *Less is More: Recursive Reasoning with Tiny Networks*. arXiv preprint arXiv:2510.04871. https://arxiv.org/abs/2510.04871
+
+[2] Wang, G., Li, J., Sun, Y., Chen, X., Liu, C., Wu, Y., Lu, M., Song, S., & Abbasi Yadkori, Y. (2025). *Hierarchical Reasoning Model*. arXiv preprint arXiv:2506.21734. https://arxiv.org/abs/2506.21734
+
+[3] Shazeer, N., Mirhoseini, A., Maziarz, K., Davis, A., Le, Q., Hinton, G., & Dean, J. (2017). *Outrageously Large Neural Networks: The Sparsely-Gated Mixture-of-Experts Layer*. arXiv preprint arXiv:1701.06538. https://arxiv.org/abs/1701.06538
