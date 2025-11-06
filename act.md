@@ -122,8 +122,8 @@ The objective and subjective heads form an **actor-critic architecture** for the
   $$\mathcal{L}_{\text{TD}} = \text{MSE}(o(x^{n}), S_n) \quad \text{for } n \geq k^{*}$$
   
 - **Actor-Critic updates**: Following standard actor-critic methodology:
-  - **Critic update**: Minimize TD error for value function $o$ while treating $S_n$ as the target (detached)
-  - **Actor update**: Update policy parameters in $g$ using the critic's value estimate as baseline (detach $o(x^{n})$)
+  - **Critic update**: Minimize TD error for value function $o$ while treating $S_n$ as the target 
+  - **Actor update**: Update policy parameters in $g$ using the critic's value estimate as baseline 
   
 - **Advantage-based learning**: Updates occur only when the policy error is non-zero (i.e., when current policy disagrees with optimal action $k^{*}$), focusing learning on meaningful decision boundaries
 
