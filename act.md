@@ -15,39 +15,39 @@ This creates a learned halting policy where computation stops when accumulated c
 
 Consider a recursive process with a neural network $f$ such that:
 
-$$f^{n}(x^{*}) = x^{*}$$
+$$x^{n+1} = f(x^{n})$$
 
 where:
 - $f$ is a neural network transformation
-- $x^{*}$ is a fixed point of the transformation
-- $n$ is the number of recursive applications (bounded)
+- $x^{n}$ is the state at iteration $n$
+- The process iterates until convergence or a maximum number of steps
 
 #### Step-wise Transformation
 
-At each iteration $i$, we have:
-$$f^{i}(x) = y$$
+At each iteration $i$, starting from initial input $x^{0}$:
+$$x^{i+1} = f(x^{i})$$
 
-where $y$ is the output after $i$ applications of $f$ to input $x$.
+where $x^{i}$ represents the state after $i$ iterations of applying $f$.
 
 ### Reinforcement Learning Formulation
 
 We cast the adaptive computation problem as a Markov Decision Process (MDP):
 
 #### MDP Components
-- **State space** $\mathcal{S}$: The intermediate representations $\{y_i\}$ at each recursive step
+- **State space** $\mathcal{S}$: The intermediate representations $\{x^{i}\}$ at each recursive step
 - **Action space** $\mathcal{A}$: Binary actions at each state - {continue, halt}
-- **Transition dynamics**: Deterministic transition $y_{i+1} = f(y_i)$ when action = continue
-- **Policy** $\pi(a|y_i)$: The halting policy learned through the objective-subjective mechanism
-- **Reward function** $r(y_i, a)$: Implicit reward balancing:
+- **Transition dynamics**: Deterministic transition $x^{i+1} = f(x^{i})$ when action = continue
+- **Policy** $\pi(a|x^{i})$: The halting policy learned through the objective-subjective mechanism
+- **Reward function** $r(x^{i}, a)$: Implicit reward balancing:
   - **Efficiency penalty**: $-\lambda$ for each additional computation step (continue action)
   - **Performance reward**: Task accuracy/loss improvement at termination
 
 #### Value Functions as Contribution Measures
 Our contribution measures are essentially **learned value functions**:
 - The accumulated objective contribution $S_n = \sum_{i=1}^{n} \tau_i$ estimates the cumulative value of computation performed
-- The subjective threshold $o(y_n)$ acts as a state-value function $V(y_n)$ estimating the required computation quality
+- The subjective threshold $o(x^{n})$ acts as a state-value function $V(x^{n})$ estimating the required computation quality
 
-The halting criterion $S_n > o(y_n)$ is thus a **learned policy** comparing two value estimates.
+The halting criterion $S_n > o(x^{n})$ is thus a **learned policy** comparing two value estimates.
 
 ### Contribution Measures
 
@@ -55,21 +55,20 @@ The halting criterion $S_n > o(y_n)$ is thus a **learned policy** comparing two 
 
 The contribution $\tau_i$ of the $i$-th step is defined as a **strictly positive value**:
 
-$$\tau_i = \frac{\|y - x\|_2}{|c_x \cdot c_y| + \epsilon} \cdot g(y - x) \in \mathbb{R}^{+}$$
+$$\tau_i = \frac{\|x^{i} - x^{i-1}\|_2}{|c_{i-1} \cdot c_i| + \epsilon} \cdot g(x^{i} - x^{i-1}) \in \mathbb{R}^{+}$$
 
 where:
-- $c_x = \text{CLS}(x)$ denotes the class token of $x$
-- $c_y = \text{CLS}(y)$ denotes the class token of $y$
-- $\|y - x\|_2$ is the Euclidean distance between consecutive states
+- $c_i = \text{CLS}(x^{i})$ denotes the class token of $x^{i}$
+- $\|x^{i} - x^{i-1}\|_2$ is the Euclidean distance between consecutive states
 - $g$ is a neural network with positive output activation (e.g., softplus, ReLU, or exponential) that learns to evaluate the difference between consecutive states
 - $\epsilon$ is a small constant for numerical stability
 - The absolute value ensures the denominator is positive
 
 #### Objective Difficulty
 
-The subjective contribution $o(y_i)$ provides a **positive, non-accumulative** score that changes at each iteration:
+The subjective contribution $o(x^{i})$ provides a **positive, non-accumulative** score that changes at each iteration:
 
-$$o: \mathcal{Y} \rightarrow \mathbb{R}^{+} \quad \text{where } o(y_i) > 0$$
+$$o: \mathcal{X} \rightarrow \mathbb{R}^{+} \quad \text{where } o(x^{i}) > 0$$
 
 Key properties:
 - **Positive valued**: Always returns positive numbers
@@ -77,17 +76,17 @@ Key properties:
 - **State-dependent jumps**: Can change discontinuously between iterations based on current state quality
 - **Dynamic threshold**: Represents the "satisfaction level" for the current state
 
-The subjective score $o(y_i)$ evaluates the quality or completeness of the current output state $y_i$ at iteration $i$.
+The subjective score $o(x^{i})$ evaluates the quality or completeness of the current output state $x^{i}$ at iteration $i$.
 
 ### ACT Termination Criterion
 
 The adaptive computation terminates when the cumulative objective contribution exceeds the current subjective threshold:
 
-$$\text{Stop when: } S_n = \sum_{i=1}^{n} \tau_i > o(y_n)$$
+$$\text{Stop when: } S_n = \sum_{i=1}^{n} \tau_i > o(x^{n})$$
 
 where:
 - $S_n$ is the accumulated objective contribution (monotonically increasing)
-- $o(y_n)$ is the subjective threshold at iteration $n$ (can jump/change at each step)
+- $o(x^{n})$ is the subjective threshold at iteration $n$ (can jump/change at each step)
 
 This criterion balances:
 - **Objective progress**: Accumulated contributions from each transformation step (always growing)
@@ -96,15 +95,15 @@ This criterion balances:
 ### Reinforcement Learning Training Workflow
 
 #### Exploration Phase
-- **Trajectory rollout**: Execute the current policy by unrolling the recurrent network $f$ for up to $K$ steps (exploration horizon), collecting the trajectory $\{y_1, ..., y_K\}$ with corresponding value estimates
+- **Trajectory rollout**: Execute the current policy by unrolling the recurrent network $f$ for up to $K$ steps (exploration horizon), collecting the trajectory $\{x^{1}, ..., x^{K}\}$ with corresponding value estimates
 - **Optimal action discovery**: Use the environment feedback (task loss) to identify the optimal halting point $k^{*}$ - this serves as the **true reward signal** revealing where the policy should have stopped
-- **Policy evaluation**: Compare the current policy's decision (where $S_n > o(y_n)$ first occurs) against the optimal action $k^{*}$
+- **Policy evaluation**: Compare the current policy's decision (where $S_n > o(x^{n})$ first occurs) against the optimal action $k^{*}$
 
 #### Policy Improvement Phase
 - **Credit assignment**: When the policy's decision differs from $k^{*}$, propagate error signals to update the value functions
 - **Temporal difference learning**: Use bootstrapped updates between objective and subjective heads:
   - Update $o$ (critic) using $S_n$ as the target value estimate
-  - Update $g$ (actor) using $o(y_n)$ as the value baseline
+  - Update $g$ (actor) using $o(x^{n})$ as the value baseline
 - **Alternating optimization**: Similar to actor-critic methods, alternate between updating the value estimator $o$ and the policy component $g$ to prevent collapse and maintain diverse exploration
 
 #### Key RL Mechanisms
@@ -119,11 +118,11 @@ The objective and subjective heads form an **actor-critic architecture** for the
 #### Temporal Difference Learning with Delayed Bootstrapping
 
 - **Value target alignment**: After discovering the optimal stopping point $k^{*}$, compute the TD error:
-  $$\mathcal{L}_{\text{TD}} = \text{MSE}(o(y_n), S_n) \quad \text{for } n \geq k^{*}$$
+  $$\mathcal{L}_{\text{TD}} = \text{MSE}(o(x^{n}), S_n) \quad \text{for } n \geq k^{*}$$
   
 - **Actor-Critic updates**: Following standard actor-critic methodology:
   - **Critic update**: Minimize TD error for value function $o$ while treating $S_n$ as the target (detached)
-  - **Actor update**: Update policy parameters in $g$ using the critic's value estimate as baseline (detach $o(y_n)$)
+  - **Actor update**: Update policy parameters in $g$ using the critic's value estimate as baseline (detach $o(x^{n})$)
   
 - **Advantage-based learning**: Updates occur only when the policy error is non-zero (i.e., when current policy disagrees with optimal action $k^{*}$), focusing learning on meaningful decision boundaries
 
