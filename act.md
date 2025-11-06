@@ -55,10 +55,9 @@ The halting criterion $S_n > o(x^{n})$ is thus a **learned policy** comparing tw
 
 The contribution $\tau_i$ of the $i$-th step is defined as a **strictly positive value**:
 
-$$\tau_i = \frac{\|x^{i} - x^{i-1}\|_2}{|c_{i-1} \cdot c_i| + \epsilon} \cdot g(x^{i} - x^{i-1}) \in \mathbb{R}^{+}$$
+$$\tau_i = \frac{\|x^{i} - x^{i-1}\|_2}{|x^{i} \cdot x^{i-1}| + \epsilon} \cdot g(x^{i} - x^{i-1}) \in \mathbb{R}^{+}$$
 
 where:
-- $c_i = \text{CLS}(x^{i})$ denotes the class token of $x^{i}$
 - $\|x^{i} - x^{i-1}\|_2$ is the Euclidean distance between consecutive states
 - $g$ is a neural network with positive output activation (e.g., softplus, ReLU, or exponential) that learns to evaluate the difference between consecutive states
 - $\epsilon$ is a small constant for numerical stability
