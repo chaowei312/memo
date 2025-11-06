@@ -54,6 +54,7 @@ The H-module maintains long-term memory across diffusion steps:
 
 #### Top-k Selection
 Select k most relevant cells based on current state:
+
 $$\mathcal{A} = \text{TopK}(\{\text{CLS}_i^\top W \cdot z_H\}_{i=1}^N, k)$$
 
 ### 4. Adaptive Computation Time for Token Prediction

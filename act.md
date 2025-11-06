@@ -15,7 +15,7 @@ This creates a learned halting policy where computation stops when accumulated c
 
 Consider a recursive process with a neural network $f$ such that:
 
-$$f^n(x^*) = x^* \quad \text{(converges with } n \text{ bounded)}$$
+$$f^n(x^*) = x^* \quad (\text{converges with bounded } n)$$
 
 where:
 - $f$ is a neural network transformation
