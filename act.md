@@ -118,6 +118,7 @@ The objective and subjective heads form an **actor-critic architecture** for the
 #### Temporal Difference Learning with Delayed Bootstrapping
 
 - **Value target alignment**: After discovering the optimal stopping point $k^{*}$, compute the TD error:
+
   $$\mathcal{L}_{\text{TD}} = \text{MSE}(o(x^{n}), S_n) \quad \text{for } n \geq k^{*}$$
   
 - **Actor-Critic updates**: Following standard actor-critic methodology:
