@@ -15,17 +15,17 @@ This creates a learned halting policy where computation stops when accumulated c
 
 Consider a recursive process with a neural network $f$ such that:
 
-$$f^n(x^*) = x^*$$
+$$f^{n}(x^{*}) = x^{*}$$
 
 where:
 - $f$ is a neural network transformation
-- $x^*$ is a fixed point of the transformation
+- $x^{*}$ is a fixed point of the transformation
 - $n$ is the number of recursive applications (bounded)
 
 #### Step-wise Transformation
 
 At each iteration $i$, we have:
-$$f^i(x) = y$$
+$$f^{i}(x) = y$$
 
 where $y$ is the output after $i$ applications of $f$ to input $x$.
 
@@ -44,7 +44,7 @@ We cast the adaptive computation problem as a Markov Decision Process (MDP):
 
 #### Value Functions as Contribution Measures
 Our contribution measures are essentially **learned value functions**:
-- The accumulated objective contribution $S_n = \sum_{i=1}^n \tau_i$ estimates the cumulative value of computation performed
+- The accumulated objective contribution $S_n = \sum_{i=1}^{n} \tau_i$ estimates the cumulative value of computation performed
 - The subjective threshold $o(y_n)$ acts as a state-value function $V(y_n)$ estimating the required computation quality
 
 The halting criterion $S_n > o(y_n)$ is thus a **learned policy** comparing two value estimates.
@@ -55,7 +55,7 @@ The halting criterion $S_n > o(y_n)$ is thus a **learned policy** comparing two 
 
 The contribution $\tau_i$ of the $i$-th step is defined as a **strictly positive value**:
 
-$$\tau_i = \frac{\|y - x\|_2}{|c_x \cdot c_y| + \epsilon} \cdot g(y - x) \in \mathbb{R}^+$$
+$$\tau_i = \frac{\|y - x\|_2}{|c_x \cdot c_y| + \epsilon} \cdot g(y - x) \in \mathbb{R}^{+}$$
 
 where:
 - $c_x = \text{CLS}(x)$ denotes the class token of $x$
@@ -69,7 +69,7 @@ where:
 
 The subjective contribution $o(y_i)$ provides a **positive, non-accumulative** score that changes at each iteration:
 
-$$o: \mathcal{Y} \rightarrow \mathbb{R}^+ \quad \text{where } o(y_i) > 0$$
+$$o: \mathcal{Y} \rightarrow \mathbb{R}^{+} \quad \text{where } o(y_i) > 0$$
 
 Key properties:
 - **Positive valued**: Always returns positive numbers
@@ -97,11 +97,11 @@ This criterion balances:
 
 #### Exploration Phase
 - **Trajectory rollout**: Execute the current policy by unrolling the recurrent network $f$ for up to $K$ steps (exploration horizon), collecting the trajectory $\{y_1, ..., y_K\}$ with corresponding value estimates
-- **Optimal action discovery**: Use the environment feedback (task loss) to identify the optimal halting point $k^*$ - this serves as the **true reward signal** revealing where the policy should have stopped
-- **Policy evaluation**: Compare the current policy's decision (where $S_n > o(y_n)$ first occurs) against the optimal action $k^*$
+- **Optimal action discovery**: Use the environment feedback (task loss) to identify the optimal halting point $k^{*}$ - this serves as the **true reward signal** revealing where the policy should have stopped
+- **Policy evaluation**: Compare the current policy's decision (where $S_n > o(y_n)$ first occurs) against the optimal action $k^{*}$
 
 #### Policy Improvement Phase
-- **Credit assignment**: When the policy's decision differs from $k^*$, propagate error signals to update the value functions
+- **Credit assignment**: When the policy's decision differs from $k^{*}$, propagate error signals to update the value functions
 - **Temporal difference learning**: Use bootstrapped updates between objective and subjective heads:
   - Update $o$ (critic) using $S_n$ as the target value estimate
   - Update $g$ (actor) using $o(y_n)$ as the value baseline
@@ -109,7 +109,7 @@ This criterion balances:
 
 #### Key RL Mechanisms
 - **Exploration-exploitation**: The system explores different stopping points during training while exploiting learned value estimates for efficient inference
-- **Off-policy learning**: Learn from the optimal trajectory $k^*$ even when the current policy would have stopped elsewhere
+- **Off-policy learning**: Learn from the optimal trajectory $k^{*}$ even when the current policy would have stopped elsewhere
 - **Bootstrapping**: Value functions learn from each other's estimates rather than requiring explicit reward supervision
 
 ### Actor-Critic Training Strategy
@@ -118,14 +118,14 @@ The objective and subjective heads form an **actor-critic architecture** for the
 
 #### Temporal Difference Learning with Delayed Bootstrapping
 
-- **Value target alignment**: After discovering the optimal stopping point $k^*$, compute the TD error:
-  $$\mathcal{L}_{\text{TD}} = \text{MSE}(o(y_n), S_n) \quad \text{for } n \geq k^*$$
+- **Value target alignment**: After discovering the optimal stopping point $k^{*}$, compute the TD error:
+  $$\mathcal{L}_{\text{TD}} = \text{MSE}(o(y_n), S_n) \quad \text{for } n \geq k^{*}$$
   
 - **Actor-Critic updates**: Following standard actor-critic methodology:
   - **Critic update**: Minimize TD error for value function $o$ while treating $S_n$ as the target (detached)
   - **Actor update**: Update policy parameters in $g$ using the critic's value estimate as baseline (detach $o(y_n)$)
   
-- **Advantage-based learning**: Updates occur only when the policy error is non-zero (i.e., when current policy disagrees with optimal action $k^*$), focusing learning on meaningful decision boundaries
+- **Advantage-based learning**: Updates occur only when the policy error is non-zero (i.e., when current policy disagrees with optimal action $k^{*}$), focusing learning on meaningful decision boundaries
 
 #### Connection to Classical RL Algorithms
 This approach combines elements from:
@@ -138,7 +138,7 @@ This approach combines elements from:
 
 Despite using supervised task labels, this is **not supervised learning** but rather **reinforcement learning with learned rewards**:
 
-1. **No fixed supervision for actions**: We don't have labeled examples of "stop at step 3" or "continue at step 5". The optimal stopping point $k^*$ is discovered through exploration and environmental feedback (task performance).
+1. **No fixed supervision for actions**: We don't have labeled examples of "stop at step 3" or "continue at step 5". The optimal stopping point $k^{*}$ is discovered through exploration and environmental feedback (task performance).
 
 2. **Sequential decision making**: The core problem is learning a policy for a sequence of decisions (continue/halt), not learning a fixed input-output mapping.
 
