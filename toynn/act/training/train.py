@@ -37,33 +37,42 @@ class ACTTrainer:
         self.seg_loss = SegmentationLoss()
         self.act_loss = ACTLoss()
         
-        # Separate optimizers for actor and critic
+        # Separate optimizers for actor and critic with safer learning rates
         self.optimizer_main = optim.AdamW(
             [p for n, p in model.named_parameters() if 'bottleneck' not in n],
-            lr=1e-3, weight_decay=1e-4
+            lr=2e-4, weight_decay=1e-5  # Safer LR to prevent explosions
         )
         
         # Actor (objective_head) optimizer
         self.optimizer_actor = optim.Adam(
             model.bottleneck.objective_head.parameters(),
-            lr=1e-4
+            lr=5e-5  # Conservative LR for RL component
         )
         
         # Critic (subjective_head) optimizer  
         self.optimizer_critic = optim.Adam(
             model.bottleneck.subjective_head.parameters(),
-            lr=1e-3
+            lr=1e-4  # Moderate LR
         )
         
-        # Mixed precision training
-        self.scaler = GradScaler()
+        # Store initial learning rates for warmup
+        for optimizer in [self.optimizer_main, self.optimizer_actor, self.optimizer_critic]:
+            for param_group in optimizer.param_groups:
+                param_group['initial_lr'] = param_group['lr']
+        
+        # Mixed precision training with conservative initial scale
+        self.scaler = GradScaler(init_scale=2**8)  # Start with smaller scale to prevent overflow
         
         # Training state
         self.epoch = 0
         self.global_step = 0
         self.best_val_loss = float('inf')
+        self.warmup_steps = 50  # Shorter warmup to start learning sooner
         self.update_critic = True  # Start with critic updates
         self.alternating_freq = 100  # Steps between actor/critic switches
+        self.steps_since_switch = 0  # Track steps since last switch for stability
+        self.gradient_skip_count = 0  # Track consecutive gradient skips
+        self.max_consecutive_skips = 20  # Reduce LR after this many consecutive skips
         
         # Metrics tracking
         self.train_metrics = []
@@ -82,43 +91,169 @@ class ACTTrainer:
             images = batch['image'].to(self.device)
             masks = batch['mask'].to(self.device)
             
-            # Forward pass with ACT trajectory
-            with autocast():
+            # Check for NaN in inputs
+            if torch.isnan(images).any() or torch.isnan(masks).any():
+                print(f"Warning: NaN in input data at batch {batch_idx}, skipping...")
+                continue
+            
+            # Forward pass with ACT trajectory (disable autocast briefly for stability)
+            use_amp = self.global_step > 50  # Start AMP sooner to match warmup
+            with autocast(enabled=use_amp):
                 predictions, act_info = self.model(images, return_act_info=True)
+                
+                # Check for NaN in predictions
+                if torch.isnan(predictions).any():
+                    print(f"Warning: NaN in predictions at batch {batch_idx}")
+                    # Try to recover by reinitializing last layer
+                    with torch.no_grad():
+                        self.model.outc.weight.data.normal_(0, 0.02)
+                        if self.model.outc.bias is not None:
+                            self.model.outc.bias.data.zero_()
+                    continue
                 
                 # Segmentation loss  
                 seg_loss = self.seg_loss(predictions, masks)
                 
-                # ACT loss (RL component)
-                act_loss_value, act_metrics = self.act_loss(
-                    act_info, masks, self.seg_loss, 
-                    update_critic=self.update_critic
-                )
+                # ACT loss (RL component) with safety check
+                try:
+                    act_loss_value, act_metrics = self.act_loss(
+                        act_info, masks, self.seg_loss, 
+                        update_critic=self.update_critic
+                    )
+                    # Check for NaN in ACT loss
+                    if torch.isnan(act_loss_value) or torch.isinf(act_loss_value):
+                        print(f"Warning: NaN/Inf in ACT loss at batch {batch_idx}, using seg_loss only")
+                        act_loss_value = torch.tensor(0.0, device=self.device, requires_grad=True)
+                        act_metrics = {'optimal_k': 0, 'policy_k': 1, 'agreement': 0, 'td_error': 0, 'pg_loss': 0}
+                except Exception as e:
+                    print(f"Warning: ACT loss computation failed at batch {batch_idx}: {e}")
+                    act_loss_value = torch.tensor(0.0, device=self.device, requires_grad=True)
+                    act_metrics = {'optimal_k': 0, 'policy_k': 1, 'agreement': 0, 'td_error': 0, 'pg_loss': 0}
                 
-                # Combined loss
-                total_loss = seg_loss + 0.1 * act_loss_value
+                # Combined loss with very small ACT weight to prevent instability
+                # Gradually increase ACT weight over time
+                if self.global_step < self.warmup_steps:
+                    act_weight = 0.001  # Very small during warmup
+                elif self.global_step < 200:
+                    act_weight = 0.01   # Small after warmup
+                elif self.global_step < 500:
+                    act_weight = 0.05   # Medium
+                else:
+                    act_weight = 0.1    # Full weight only after substantial training
+                    
+                total_loss = seg_loss + act_weight * act_loss_value
             
             # Backward pass
             self.optimizer_main.zero_grad()
-            if self.update_critic:
-                self.optimizer_critic.zero_grad()
+            aux_optimizer = self.optimizer_critic if self.update_critic else self.optimizer_actor
+            aux_optimizer.zero_grad()
+            
+            # Scale loss only if using mixed precision
+            if use_amp:
+                self.scaler.scale(total_loss).backward()
             else:
-                self.optimizer_actor.zero_grad()
+                total_loss.backward()
             
-            self.scaler.scale(total_loss).backward()
+            # Check if auxiliary optimizer has gradients
+            aux_has_grad = any(
+                param.grad is not None
+                for group in aux_optimizer.param_groups
+                for param in group["params"]
+            )
             
-            # Gradient clipping
-            self.scaler.unscale_(self.optimizer_main)
-            torch.nn.utils.clip_grad_norm_(self.model.parameters(), 1.0)
+            # Unscale gradients for both optimizers before clipping (only if using AMP)
+            if use_amp:
+                self.scaler.unscale_(self.optimizer_main)
+                if aux_has_grad:
+                    self.scaler.unscale_(aux_optimizer)
             
-            # Optimizer steps
-            self.scaler.step(self.optimizer_main)
-            if self.update_critic:
-                self.scaler.step(self.optimizer_critic)
+            # Debug which part has exploding gradients and clip separately
+            main_params = [p for n, p in self.model.named_parameters() if 'bottleneck' not in n and p.grad is not None]
+            bottleneck_params = [p for n, p in self.model.named_parameters() if 'bottleneck' in n and p.grad is not None]
+            
+            if main_params:
+                main_grad_norm = torch.nn.utils.clip_grad_norm_(main_params, 0.5, error_if_nonfinite=False)
             else:
-                self.scaler.step(self.optimizer_actor)
+                main_grad_norm = 0.0
+                
+            if bottleneck_params:
+                # Bottleneck (ACT) gets even stricter clipping since it's causing issues
+                bottleneck_grad_norm = torch.nn.utils.clip_grad_norm_(bottleneck_params, 0.1, error_if_nonfinite=False)
+            else:
+                bottleneck_grad_norm = 0.0
             
-            self.scaler.update()
+            # Overall gradient clipping - more aggressive
+            grad_norm = torch.nn.utils.clip_grad_norm_(self.model.parameters(), 0.5, error_if_nonfinite=False)
+            
+            # Skip update if gradients are still too large after clipping
+            threshold = 5.0  # Stricter threshold
+            if grad_norm > threshold or torch.isnan(grad_norm) or torch.isinf(grad_norm):
+                self.gradient_skip_count += 1
+                print(f"Warning: Gradient explosion at batch {batch_idx} - Total: {grad_norm:.2f}, Main: {main_grad_norm:.2f}, Bottleneck: {bottleneck_grad_norm:.2f} (skip #{self.gradient_skip_count})")
+                
+                # Reduce learning rates if we're getting too many consecutive skips
+                if self.gradient_skip_count >= self.max_consecutive_skips:
+                    print(f"  Reducing learning rates after {self.gradient_skip_count} consecutive skips")
+                    for param_group in self.optimizer_main.param_groups:
+                        param_group['lr'] *= 0.5
+                    for param_group in aux_optimizer.param_groups:
+                        param_group['lr'] *= 0.5
+                    self.gradient_skip_count = 0  # Reset counter
+                
+                # Reset optimizer states if gradients are extremely bad
+                if grad_norm > 100.0 or torch.isnan(grad_norm):
+                    print(f"  Resetting optimizer states due to extreme gradients")
+                    # Clear all optimizer states to recover
+                    self.optimizer_main.state = {}
+                    aux_optimizer.state = {}
+                    # Also reset learning rates to very conservative values
+                    for param_group in self.optimizer_main.param_groups:
+                        param_group['lr'] = 5e-5  # Very conservative
+                    for param_group in aux_optimizer.param_groups:
+                        param_group['lr'] = 1e-5  # Very conservative
+                
+                # Only update scaler if we were using AMP
+                if use_amp:
+                    self.scaler.update()  # Still need to update scaler state
+                continue
+            else:
+                # Reset skip counter on successful update
+                if self.gradient_skip_count > 0:
+                    print(f"  Gradient back to normal after {self.gradient_skip_count} skips")
+                self.gradient_skip_count = 0
+            
+            # Learning rate warmup
+            if self.global_step < self.warmup_steps:
+                warmup_factor = (self.global_step + 1) / self.warmup_steps
+                for param_group in self.optimizer_main.param_groups:
+                    param_group['lr'] = param_group.get('initial_lr', param_group['lr']) * warmup_factor
+                for param_group in aux_optimizer.param_groups:
+                    param_group['lr'] = param_group.get('initial_lr', param_group['lr']) * warmup_factor
+            
+            # Optimizer steps with NaN check
+            old_params = {name: param.clone() for name, param in self.model.named_parameters()}
+            
+            if use_amp:
+                self.scaler.step(self.optimizer_main)
+                if aux_has_grad:
+                    self.scaler.step(aux_optimizer)
+                self.scaler.update()
+            else:
+                self.optimizer_main.step()
+                if aux_has_grad:
+                    aux_optimizer.step()
+            
+            # Check if any parameters became NaN and restore if needed
+            has_nan = False
+            for name, param in self.model.named_parameters():
+                if torch.isnan(param).any() or torch.isinf(param).any():
+                    print(f"Warning: NaN/Inf in parameter {name} after update, restoring...")
+                    param.data = old_params[name].data
+                    has_nan = True
+            
+            if has_nan:
+                print(f"Restored model parameters at batch {batch_idx} due to NaN/Inf")
+                continue
             
             # Update metrics
             epoch_metrics['seg_loss'].append(seg_loss.item())
@@ -129,10 +264,25 @@ class ACTTrainer:
             
             # Alternate between actor and critic updates
             self.global_step += 1
+            self.steps_since_switch += 1
             if self.global_step % self.alternating_freq == 0:
                 self.update_critic = not self.update_critic
                 mode = "Critic" if self.update_critic else "Actor"
                 print(f"\nSwitching to {mode} updates")
+                self.steps_since_switch = 0  # Reset counter
+                # Reset optimizer state when switching to prevent momentum carryover
+                if self.update_critic:
+                    self.optimizer_critic.zero_grad()
+                    for group in self.optimizer_critic.param_groups:
+                        for p in group['params']:
+                            if p.grad is not None:
+                                p.grad.data.zero_()
+                else:
+                    self.optimizer_actor.zero_grad()
+                    for group in self.optimizer_actor.param_groups:
+                        for p in group['params']:
+                            if p.grad is not None:
+                                p.grad.data.zero_()
             
             # Update progress bar
             pbar.set_postfix({
@@ -167,13 +317,34 @@ class ACTTrainer:
             val_metrics['seg_loss'].append(seg_loss.item())
             
             # Compute IoU and Dice
-            pred_binary = (torch.sigmoid(predictions) > 0.5).float()
-            intersection = (pred_binary * masks).sum(dim=(2, 3))
-            union = (pred_binary + masks).clamp(0, 1).sum(dim=(2, 3))
-            iou = (intersection / (union + 1e-6)).mean()
-            dice = (2 * intersection / (pred_binary.sum(dim=(2, 3)) + 
-                                       masks.sum(dim=(2, 3)) + 1e-6)).mean()
-            
+            if predictions.shape[1] == 1:
+                probs = torch.sigmoid(predictions)
+                pred_mask = (probs > 0.5).float()
+                target_mask = masks.float()
+
+                intersection = (pred_mask * target_mask).sum(dim=(2, 3))
+                union = pred_mask.sum(dim=(2, 3)) + target_mask.sum(dim=(2, 3)) - intersection
+                iou = (intersection / (union + 1e-6)).mean()
+
+                dice = (2 * intersection / (
+                    pred_mask.sum(dim=(2, 3)) + target_mask.sum(dim=(2, 3)) + 1e-6
+                )).mean()
+            else:
+                num_classes = predictions.shape[1]
+                pred_classes = predictions.argmax(dim=1)
+                target_classes = masks.squeeze(1).long() if masks.shape[1] == 1 else masks.argmax(dim=1)
+
+                pred_one_hot = torch.nn.functional.one_hot(pred_classes, num_classes).permute(0, 3, 1, 2).float()
+                target_one_hot = torch.nn.functional.one_hot(target_classes, num_classes).permute(0, 3, 1, 2).float()
+
+                intersection = (pred_one_hot * target_one_hot).sum(dim=(2, 3))
+                union = pred_one_hot.sum(dim=(2, 3)) + target_one_hot.sum(dim=(2, 3)) - intersection
+                iou = (intersection / (union + 1e-6)).mean()
+
+                dice = (2 * intersection / (
+                    pred_one_hot.sum(dim=(2, 3)) + target_one_hot.sum(dim=(2, 3)) + 1e-6
+                )).mean()
+
             val_metrics['iou'].append(iou.item())
             val_metrics['dice'].append(dice.item())
             

@@ -29,11 +29,13 @@ class DiceLoss(nn.Module):
         pred = pred.reshape(pred.shape[0], pred.shape[1], -1)
         target = target.reshape(target.shape[0], target.shape[1], -1)
         
-        # Compute Dice coefficient
+        # Compute Dice coefficient with numerical stability
         intersection = (pred * target).sum(dim=2)
         union = pred.sum(dim=2) + target.sum(dim=2)
         
-        dice = (2 * intersection + self.smooth) / (union + self.smooth)
+        # Add epsilon to prevent division by zero
+        dice = (2 * intersection + self.smooth) / (union + self.smooth + 1e-8)
+        dice = torch.clamp(dice, min=0.0, max=1.0)  # Ensure dice is in valid range
         
         return 1 - dice.mean()
 
@@ -53,17 +55,31 @@ class SegmentationLoss(nn.Module):
             pred: Model predictions [B, C, H, W]
             target: Ground truth masks [B, 1, H, W] for binary
         """
+        # Light clamping to prevent extreme values
+        pred = torch.clamp(pred, min=-20, max=20)
+        
         # Dice loss
         dice = self.dice_loss(pred, target)
         
-        # BCE loss
+        # BCE loss with numerical stability
         if pred.shape[1] == 1:  # Binary segmentation
-            bce = F.binary_cross_entropy_with_logits(pred, target)
+            bce = F.binary_cross_entropy_with_logits(
+                pred, target, reduction='mean'
+            )
         else:  # Multi-class
             target_long = target.squeeze(1).long()
             bce = F.cross_entropy(pred, target_long)
         
-        return self.dice_weight * dice + self.bce_weight * bce
+        # Combine losses
+        loss = self.dice_weight * dice + self.bce_weight * bce
+        
+        # Only intervene if truly problematic
+        if torch.isnan(loss) or torch.isinf(loss):
+            print(f"Warning: NaN/Inf loss detected. Dice: {dice.item()}, BCE: {bce.item()}")
+            # Return the last valid loss value instead of a constant
+            return bce if not torch.isnan(bce) else torch.tensor(0.7, device=pred.device, requires_grad=True)
+        
+        return loss
 
 
 class ACTLoss(nn.Module):

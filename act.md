@@ -42,12 +42,20 @@ We cast the adaptive computation problem as a Markov Decision Process (MDP):
   - **Efficiency penalty**: $-\lambda$ for each additional computation step (continue action)
   - **Performance reward**: Task accuracy/loss improvement at termination
 
-#### Value Functions as Contribution Measures
-Our contribution measures are essentially **learned value functions**:
-- The accumulated objective contribution $S_n = \sum_{i=1}^{n} \tau_i$ estimates the cumulative value of computation performed
-- The subjective threshold $o(x^{n})$ acts as a state-value function $V(x^{n})$ estimating the required computation quality
+#### Dual Value Functions for Halting Decisions
+Our system employs **two distinct value functions** with competing objectives:
+- The accumulated subjective contribution $S_n = \sum_{i=1}^{n} \tau_i$ measures the cumulative progress made through iterations
+- The objective threshold $o(x^{n})$ estimates the total contribution required for the current state
 
-The halting criterion $S_n > o(x^{n})$ is thus a **learned policy** comparing two value estimates.
+The halting criterion $S_n > o(x^{n})$ creates an **emergent policy** from comparing these two value estimates - neither function alone determines the action.
+
+### Transformer-Based ACT Bottleneck
+
+- **Conv encoder front-end**: Spatial features from the U-Net encoder remain convolutional, preserving the pyramidal hierarchy before ACT processing.
+- **Recurrent transformer core**: At the bottleneck we tokenize the feature map via stride-$p$ convolutional patch embeddings, append a learnable CLS token, and run a weight-shared transformer layer at every ACT iteration to produce a refined spatial state plus the CLS summary.
+- **CLS-driven threshold**: The CLS embedding is routed through a learnable function to estimate the objective threshold $o(x^n)$, one of the two value functions.
+- **State-and-difference contribution**: A learnable function takes the current state and state difference to produce the subjective contribution score $\tau_i = g(x^i, \Delta x^i)$, the other value function.
+- **Shared halting policy**: The recurrent transformer, contribution function, and threshold function together implement the continue/halt policy while keeping the encoder/decoder unchanged.
 
 ### Contribution Measures
 
@@ -55,41 +63,46 @@ The halting criterion $S_n > o(x^{n})$ is thus a **learned policy** comparing tw
 
 The contribution $\tau_i$ of the $i$-th step is defined as a **strictly positive value**:
 
-$$\tau_i = \frac{\|x^{i} - x^{i-1}\|_2}{|x^{i} \cdot x^{i-1}| + \epsilon} \cdot g(x^{i} - x^{i-1}) \in \mathbb{R}^{+}$$
+$$\tau_i = g(x^{i}, \Delta x^{i}) \in \mathbb{R}^{+}$$
 
 where:
-- $\|x^{i} - x^{i-1}\|_2$ is the Euclidean distance between consecutive states
-- $g$ is a neural network with positive output activation (e.g., softplus, ReLU, or exponential) that learns to evaluate the difference between consecutive states
-- $\epsilon$ is a small constant for numerical stability
-- The absolute value ensures the denominator is positive
+- $x^{i}$ is the current state at iteration $i$
+- $\Delta x^{i} = x^{i} - x^{i-1}$ is the change between consecutive states
+- $g$ is a learnable function with positive output
+- The function learns to measure meaningful progress from both the absolute state and relative change
 
-#### Objective Difficulty
+#### Objective Threshold
 
-The subjective contribution $o(x^{i})$ provides a **positive, non-accumulative** score that changes at each iteration:
+The objective threshold $o(x^{i})$ provides a **positive, non-accumulative** score that changes at each iteration:
 
-$$o: \mathcal{X} \rightarrow \mathbb{R}^{+} \quad \text{where } o(x^{i}) > 0$$
+$$o: \mathcal{X} \rightarrow \mathbb{R}^{+}$$
+
+where:
+- $x^{i}$ is the current state at iteration $i$
+- $o$ is a learnable function that maps the state to a positive scalar
+- The function learns to estimate how much total contribution is needed for the current state
 
 Key properties:
 - **Positive valued**: Always returns positive numbers
-- **Non-accumulative**: Unlike objective contributions, subjective score doesn't accumulate
+- **Non-accumulative**: Unlike subjective contributions, objective threshold doesn't accumulate
 - **State-dependent jumps**: Can change discontinuously between iterations based on current state quality
 - **Dynamic threshold**: Represents the "satisfaction level" for the current state
 
-The subjective score $o(x^{i})$ evaluates the quality or completeness of the current output state $x^{i}$ at iteration $i$.
+The objective threshold $o(x^{i})$ evaluates the quality or completeness of the current output state $x^{i}$ at iteration $i$.
 
 ### ACT Termination Criterion
 
-The adaptive computation terminates when the cumulative objective contribution exceeds the current subjective threshold:
+The adaptive computation terminates when the cumulative subjective contribution exceeds the current objective threshold:
 
 $$\text{Stop when: } S_n = \sum_{i=1}^{n} \tau_i > o(x^{n})$$
 
 where:
-- $S_n$ is the accumulated objective contribution (monotonically increasing)
-- $o(x^{n})$ is the subjective threshold at iteration $n$ (can jump/change at each step)
+- $S_n$ is the accumulated subjective contribution (monotonically increasing)
+- $o(x^{n})$ is the objective threshold at iteration $n$ (can jump/change at each step)
 
 This criterion balances:
-- **Objective progress**: Accumulated contributions from each transformation step (always growing)
-- **Subjective quality**: Current output quality assessment (dynamically changing)
+- **Subjective progress**: Accumulated contributions from each transformation step (always growing)
+- **Objective quality**: Current output quality assessment (dynamically changing)
 
 ### Reinforcement Learning Training Workflow
 
@@ -99,54 +112,39 @@ This criterion balances:
 - **Policy evaluation**: Compare the current policy's decision (where $S_n > o(x^{n})$ first occurs) against the optimal action $k^{*}$
 
 #### Policy Improvement Phase
-- **Credit assignment**: When the policy's decision differs from $k^{*}$, propagate error signals to update the value functions
-- **Temporal difference learning**: Use bootstrapped updates between objective and subjective heads:
-  - Update $o$ (critic) using $S_n$ as the target value estimate
-  - Update $g$ (actor) using $o(x^{n})$ as the value baseline
-- **Alternating optimization**: Similar to actor-critic methods, alternate between updating the value estimator $o$ and the policy component $g$ to prevent collapse and maintain diverse exploration
+- **Credit assignment**: When the policy's decision differs from $k^{*}$, propagate error signals to update both value functions
+- **Dual value learning**: Use bootstrapped updates between the two value estimators:
+  - Update $o$ (threshold estimator) using $S_n$ as the target value at $k^{*}$
+  - Update $g$ (contribution estimator) using policy gradients when decisions are incorrect
+- **Alternating optimization**: Alternate between updating the threshold function $o$ and the contribution function $g$ to prevent collapse and maintain balanced learning
 
-#### Key RL Mechanisms
-- **Exploration-exploitation**: The system explores different stopping points during training while exploiting learned value estimates for efficient inference
-- **Off-policy learning**: Learn from the optimal trajectory $k^{*}$ even when the current policy would have stopped elsewhere
-- **Bootstrapping**: Value functions learn from each other's estimates rather than requiring explicit reward supervision
+### Dual Value Network Training Strategy
 
-### Actor-Critic Training Strategy
+The objective and subjective heads form a **dual value network system** where the policy emerges from their comparison. This differs from standard actor-critic architectures:
 
-The objective and subjective heads form an **actor-critic architecture** for the halting policy:
+- **Standard Actor-Critic**: Separate policy network (actor) and value network (critic), with actor outputting action probabilities
+- **ACT Dual Value System**: Two value networks with different objectives; policy emerges deterministically from their comparison $S_n > o(x^n)$
+- **Neither g nor o is a policy network** - both output continuous values, and the decision emerges from their relative magnitudes
 
-#### Temporal Difference Learning with Delayed Bootstrapping
+#### Competing Value Functions with Bootstrapped Learning
 
-- **Value target alignment**: After discovering the optimal stopping point $k^{*}$, compute the TD error:
+- **Threshold calibration**: After discovering the optimal stopping point $k^{*}$, align the threshold estimator:
 
-  $$\mathcal{L}_{\text{TD}} = \text{MSE}(o(x^{n}), S_n) \quad \text{for } n \geq k^{*}$$
+  $$\mathcal{L}_{threshold} = \text{MSE}(o(x^{k^*}), S_{k^*}) \quad \text{at optimal } k^{*}$$
   
-- **Actor-Critic updates**: Following standard actor-critic methodology:
-  - **Critic update**: Minimize TD error for value function $o$ while treating $S_n$ as the target 
-  - **Actor update**: Update policy parameters in $g$ using the critic's value estimate as baseline 
+- **Dual value updates**: The two value functions learn complementary objectives:
+  - **Threshold update**: Train $o$ to predict the correct cumulative contribution needed at optimal states
+  - **Contribution update**: Train $g$ to produce contributions that lead to correct stopping decisions via policy gradients
   
-- **Advantage-based learning**: Updates occur only when the policy error is non-zero (i.e., when current policy disagrees with optimal action $k^{*}$), focusing learning on meaningful decision boundaries
+- **Conditional learning**: Updates occur only when the emergent policy (from $S_n > o(x^n)$) disagrees with the optimal action $k^{*}$, focusing learning on decision boundaries
 
-#### Connection to Classical RL Algorithms
-This approach combines elements from:
-- **Double Q-learning**: Alternating value updates prevent overestimation bias
-- **A3C/PPO**: Parallel trajectory collection with asynchronous updates
-- **TD($\lambda$)**: Bootstrapping from intermediate value estimates
-- **REINFORCE with baseline**: Using value estimates to reduce variance in policy gradients
+### Key Distinction: Emergent Policy from Dual Values
 
-### Why This Is Fundamentally Reinforcement Learning
+While ACT is fundamentally reinforcement learning (learning through trial and error without action supervision), it employs a unique architecture:
 
-Despite using supervised task labels, this is **not supervised learning** but rather **reinforcement learning with learned rewards**:
+- **Not traditional actor-critic**: No explicit policy network outputting action probabilities
+- **Not standard Q-learning**: No single value function determining actions
+- **ACT's innovation**: Two competing value functions ($g$ and $o$) whose comparison yields an emergent, deterministic policy
 
-1. **No fixed supervision for actions**: We don't have labeled examples of "stop at step 3" or "continue at step 5". The optimal stopping point $k^{*}$ is discovered through exploration and environmental feedback (task performance).
+This design maintains all core RL properties (exploration, credit assignment, reward-based learning) while introducing a novel mechanism for action selection through dual value comparison.
 
-2. **Sequential decision making**: The core problem is learning a policy for a sequence of decisions (continue/halt), not learning a fixed input-output mapping.
-
-3. **Exploration is essential**: Without exploring different stopping points up to $K$ steps, we cannot discover the optimal policy. This exploration-exploitation tradeoff is fundamental to RL.
-
-4. **Value function learning**: The objective ($S_n$) and subjective ($o$) heads are learning value functions that estimate future returns, not supervised predictors.
-
-5. **Credit assignment problem**: We must assign credit across a trajectory of decisions to determine which stopping point yields the best reward (task performance vs. computation cost).
-
-6. **Policy gradient structure**: The alternating updates between actor (g) and critic (o) follow the mathematical structure of policy gradient methods, not supervised gradient descent.
-
-The supervised task loss merely provides the **reward signal** that guides policy learning - it tells us how good our halting decision was, but doesn't directly supervise the halting mechanism itself. This is analogous to how game scores guide RL agents without providing explicit action labels.

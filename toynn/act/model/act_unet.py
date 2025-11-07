@@ -39,6 +39,28 @@ class ACTUNet(nn.Module):
         self.up3 = Up(256, 128 // factor, bilinear)
         self.up4 = Up(128, 64, bilinear)
         self.outc = nn.Conv2d(64, n_classes, kernel_size=1)
+
+        self.apply(self._init_weights)
+        self.bottleneck.reset_parameters()
+        
+        # Balanced initialization for output layer
+        with torch.no_grad():
+            self.outc.weight.data.normal_(0, 0.02)  # Slightly larger for gradient flow
+            if self.outc.bias is not None:
+                self.outc.bias.data.zero_()
+    @staticmethod
+    def _init_weights(module):
+        if isinstance(module, nn.Conv2d):
+            nn.init.kaiming_normal_(module.weight, mode='fan_out', nonlinearity='relu')
+            if module.bias is not None:
+                nn.init.zeros_(module.bias)
+        elif isinstance(module, (nn.BatchNorm2d, nn.GroupNorm)):
+            nn.init.ones_(module.weight)
+            nn.init.zeros_(module.bias)
+        elif isinstance(module, nn.Linear):
+            nn.init.xavier_uniform_(module.weight)
+            if module.bias is not None:
+                nn.init.zeros_(module.bias)
         
     def forward(self, x, return_act_info=False):
         """
@@ -62,7 +84,7 @@ class ACTUNet(nn.Module):
         # ACT Bottleneck
         x_bottleneck, act_info = self.bottleneck(x5, return_trajectory=return_act_info)
         
-        # Decoder
+        # Decoder for final prediction
         x = self.up1(x_bottleneck, x4)
         x = self.up2(x, x3)
         x = self.up3(x, x2)
@@ -70,6 +92,20 @@ class ACTUNet(nn.Module):
         logits = self.outc(x)
         
         if return_act_info:
+            feature_traj = act_info.get('feature_trajectory') if act_info is not None else None
+            if feature_traj is not None:
+                logits_traj = []
+                with torch.no_grad():
+                    for feat in feature_traj:
+                        y = self.up1(feat, x4)
+                        y = self.up2(y, x3)
+                        y = self.up3(y, x2)
+                        y = self.up4(y, x1)
+                        logits_step = self.outc(y)
+                        logits_traj.append(logits_step)
+                act_info['trajectory'] = torch.stack(logits_traj, dim=0) if logits_traj else None
+            else:
+                act_info['trajectory'] = None
             return logits, act_info
         return logits
     
